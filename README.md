@@ -5,21 +5,14 @@ gradually roll out new versions of your Cloud Run services. By using metrics, it
 automatically decides to slowly increase traffic to a new version or roll back
 to the previous one.
 
-## Usage
+> **Disclaimer:** This project is not an official Google product and is provided
+> as-is. You might encounter issues since this project is in **alpha** stage.
 
-```shell
-cloud_run_release_operator -cli -project=<YOUR_PROJECT>
-```
+Quick links:
 
-Once you run this command, it will check the health of Cloud Run services with
-the label `rollout-strategy=gradual` every minute by looking at the candidate's
-metrics for the past 30 minutes by default.
-
-- The health is determined using the metrics and configured health criteria
-- By default, the only health criteria is a expected max server error rate of
-1%
-- If metrics show a healthy candidate, traffic to candidate is increased
-- If metrics show an unhealthy candidate, a roll back is performed
+* [How does it work](#how-does-it-work)
+* [Set it up on Cloud Run](#setup)
+* [Try it out (locally)](#try-out)
 
 ## How does it work?
 
@@ -64,6 +57,101 @@ version. Traffic to **v2** is inmediately dropped, and all traffic is redirected
 to **v1**
 
 ![Rollout stages](assets/rollback-stages.svg "Rollout stages from v1 to v2")
+
+## Try it out (locally)  <a id="try-out"></a>
+
+1. Check out this repository.
+1. Make sure you have Go compiler installed, run:
+
+    ```sh
+    go build -o cloud_run_release_operator ./cmd/operator
+    ```
+
+1. To start the program, run:
+
+    ```shell
+    ./cloud_run_release_operator -cli -project=<YOUR_PROJECT>
+    ```
+
+Once you run this command, it will check the health of Cloud Run services with
+the label `rollout-strategy=gradual` every minute by looking at the candidate's
+metrics for the past 30 minutes by default.
+
+- The health is determined using the metrics and configured health criteria
+- By default, the only health criteria is a expected max server error rate of
+1%
+- If metrics show a healthy candidate, traffic to candidate is increased
+- If metrics show an unhealthy candidate, a roll back is performed.
+
+## Setup <a id="setup"></a>
+
+Cloud Run Progressive Delivery Operator is distributed as a server deployed to
+Cloud Run, invoked periodically by [Cloud
+Scheduler](https://cloud.google.com/scheduler/).
+
+To set up this on Cloud Run, run the following steps on your shell:
+
+1. Set your project ID in a variable:
+
+    ```sh
+    PROJECT_ID=<your-project>
+    ```
+
+1. Create a new service account:
+
+    ```sh
+    gcloud iam service-accounts create release-manager
+    ```
+
+1. (Optional) Mirror the docker image to your GCP project.
+
+    ```sh
+    docker pull gcr.io/ahmetb-demo/cloud-run-release-operator
+    docker tag gcr.io/$PROJECT_ID/cloud-run-release-operator
+    docker push gcr.io/$PROJECT_ID/cloud-run-release-operator
+    ```
+
+1. Deploy the Operator as a Cloud Run service:
+
+    ```sh
+    gcloud run deploy release-manager \
+        --platform=managed \
+        --region=us-central1 \
+        --image=gcr.io/$PROJECT_ID/cloud-run-release-operator \
+        --service-account=release-manager@${PROJECT_ID}.iam.gserviceaccount.com
+        --args=-project=$PROJECT_ID
+    ```
+
+1. Find the URL of your Cloud Run service and set as `URL` variable:
+
+    ```sh
+    URL=$(gcloud run services describe release-manager \
+        --platform=managed --region=us-central1 \
+        --format='value(status.url)'
+    ```
+
+1. Create a Cloud Scheduler job and give it access to call the release manager
+   every minute:
+
+    ```sh
+    gcloud services enable cloudscheduler.googleapis.com
+    ```
+
+    ```sh
+    gcloud run services add-iam-policy-binding release-manager \
+        --platform=managed \
+        --region=us-central1 \
+        --member=serviceAccount:release-manager@${PROJECT_ID}.iam.gserviceaccount.com \
+        --role=roles/run.invoker
+    ```
+
+    ```sh
+    gcloud beta scheduler jobs create http test-job --schedule "* * * * *" \
+        --http-method=HTTP-METHOD \
+        --uri="${URL}/rollout" \
+        --oidc-service-account-email=release-manager@${PROJECT_ID}.iam.gserviceaccount.com \
+        --oidc-token-audience="${URL}"
+    ```
 
 ## Configuration
 
